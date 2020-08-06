@@ -1,5 +1,4 @@
 package com.example.cameraxapp
-
 import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
 import android.Manifest
@@ -25,10 +24,12 @@ import java.util.concurrent.ExecutorService
 typealias LumaListener = (luma: Double) -> Unit
 
 class MainActivity : AppCompatActivity() {
+
     private var preview: Preview? = null
     private var imageCapture: ImageCapture? = null
     private var imageAnalyzer: ImageAnalysis? = null
     private var camera: Camera? = null
+
 
     private lateinit var outputDirectory: File
     private lateinit var cameraExecutor: ExecutorService
@@ -36,6 +37,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+
 
         // カメラのパーミッション変更をリクエスト
         if (allPermissionsGranted()) {
@@ -52,9 +54,8 @@ class MainActivity : AppCompatActivity() {
 
         cameraExecutor = Executors.newSingleThreadExecutor()
     }
-
     //カメラの起動をするメソッド
-    private fun startCamera() {
+    fun startCamera() {
 
         //カメラの設定を担当するシングルトンインスタンス
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
@@ -68,30 +69,41 @@ class MainActivity : AppCompatActivity() {
             imageCapture = ImageCapture.Builder()
                 .build()
 
+
+            imageAnalyzer = ImageAnalysis.Builder()
+                .build()
+                .also {
+                    it.setAnalyzer(cameraExecutor, LuminosityAnalyzer {luma: Double ->
+                        Log.d(TAG, "Average luminosity: $luma")
+                        
+                    })
+                }
+
             val cameraSelector = CameraSelector.Builder().requireLensFacing(CameraSelector.LENS_FACING_BACK).build()
 
             try {
                 cameraProvider.unbindAll()
 
                 camera = cameraProvider.bindToLifecycle(
-                    this, cameraSelector, preview, imageCapture)
+                    this, cameraSelector, preview, imageCapture, imageAnalyzer)
 
                 preview?.setSurfaceProvider(viewFinder.createSurfaceProvider(camera?.cameraInfo))
             } catch (exe: Exception) {
-                Log.e(TAG, "Use case binding failed", exe)
+                Log.e(MainActivity.TAG, "Use case binding failed", exe)
             }
 
         }, ContextCompat.getMainExecutor(this))
     }
 
-    private fun takePhoto() {
+    fun takePhoto() {
         //写真を撮るためのAndroidユースケースを生成　(return がないとアプリがクラッシュする)
         val imageCapture = imageCapture ?: return
 
         //撮影した写真を保存するファイルを作成　タイムスタンプつき
         val photoFile = File(
             outputDirectory,
-            SimpleDateFormat(FILENAME_FORMAT, Locale.JAPAN
+            SimpleDateFormat(
+                MainActivity.FILENAME_FORMAT, Locale.JAPAN
             ).format(System.currentTimeMillis()) + ".jpg")
 
         //キャプチャしたイメージをphotoFileに保存する　(Builderのなかに処理したいファイルいれる)
@@ -106,18 +118,20 @@ class MainActivity : AppCompatActivity() {
 
                 //画像の撮影/保存に失敗した際のエラーログ記述
                 override fun onError(exception: ImageCaptureException) {
-                    Log.e(TAG, "Photo capture failed: ${exception.message}", exception)
+                    Log.e(MainActivity.TAG, "Photo capture failed: ${exception.message}", exception)
                 }
                 //撮影がうまくいった場合　写真をphotoFileに保存
                 override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
                     val savedUri = Uri.fromFile(photoFile)
                     val msg = "Photo capture succeeded: $savedUri"
                     Toast.makeText(baseContext, msg, Toast.LENGTH_SHORT).show()
-                    Log.d(TAG, msg)
+                    Log.d(MainActivity.TAG, msg)
                 }
             }
         )
     }
+
+
 
     private fun allPermissionsGranted() = REQUIRED_PERMISSIONS.all {
         ContextCompat.checkSelfPermission(
@@ -151,5 +165,32 @@ class MainActivity : AppCompatActivity() {
         private const val FILENAME_FORMAT = "yyyy-MM-dd-HH-mm-ss-SSS"
         private const val REQUEST_CODE_PERMISSIONS = 10
         private val REQUIRED_PERMISSIONS = arrayOf(Manifest.permission.CAMERA)
+    }
+
+
+    private class LuminosityAnalyzer(private val listener: LumaListener) : ImageAnalysis.Analyzer {
+
+        private fun ByteBuffer.toByteArray(): ByteArray {
+
+            //バッファの値をゼロに巻き戻し
+            rewind()
+            val data = ByteArray(remaining())
+            //バイト配列にバッファをコピー
+            get(data)
+            return data
+        }
+
+        override fun analyze(image: ImageProxy) {
+
+            val buffer = image.planes[0].buffer
+            val data = buffer.toByteArray()
+            val pixels = data.map { it.toInt() and 0xFF }
+            val luma = pixels.average()
+
+            listener(luma)
+
+            image.close()
+
+        }
     }
 }
